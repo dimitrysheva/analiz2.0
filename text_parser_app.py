@@ -4,7 +4,6 @@ import re
 from io import StringIO, BytesIO
 import plotly.express as px
 import openpyxl
-import numpy as np
 
 st.set_page_config(layout="wide", page_title="Аналізатор даних з тексту", page_icon="📝")
 
@@ -24,29 +23,10 @@ st.markdown("""
 """)
 
 
-# --- Допоміжна функція для конвертації тексту часу в хвилини ---
-def convert_downtime_to_minutes(downtime_text):
-    if not isinstance(downtime_text, str) or downtime_text.strip() == "":
-        return np.nan
-    
-    total_minutes = 0
-    days = re.search(r'(\d+)\s*день', downtime_text)
-    hours = re.search(r'(\d+)\s*год', downtime_text)
-    minutes = re.search(r'(\d+)\s*хв', downtime_text)
-    
-    if days:
-        total_minutes += int(days.group(1)) * 24 * 60
-    if hours:
-        total_minutes += int(hours.group(1)) * 60
-    if minutes:
-        total_minutes += int(minutes.group(1))
-        
-    return total_minutes
-
-# --- Оновлена функція-парсер для вставлених даних ---
+# --- Функція-парсер для вставлених даних ---
 def parse_pasted_data(text_data):
     """
-    Розбирає вставлений текст, витягаючи дані з кожної заявки.
+    Розбирає вставлений текст, витягуючи дані з кожної заявки.
     """
     records = re.split(r'(A-\d{6,})', text_data)
     records = [records[i] + records[i+1] for i in range(1, len(records), 2)]
@@ -56,51 +36,17 @@ def parse_pasted_data(text_data):
     for record in records:
         record = record.replace('\n', '')
 
-        # ID
         id_match = re.search(r'^(A-\d{6,})', record)
         if not id_match:
             continue
         id_val = id_match.group(1)
-        remaining_text = record[len(id_val):].strip()
 
-        # Вид заявки та Статус
-        status_keywords = "(?:-Відмінено|-Відхилено|Виконано|Чекає підтвердження|В роботі)"
-        match_type_status = re.search(r'^(.*?)' + status_keywords, remaining_text)
+        remaining_text = record[len(id_val):].strip()
         type_val = ""
         status_val = ""
-        if match_type_status:
-            type_val = match_type_status.group(1).strip()
-            if type_val.startswith("Простій РЦ"): type_val = "Простій РЦ"
-            elif type_val.startswith("Простій"): type_val = "Простій"
-            remaining_text = remaining_text[len(match_type_status.group(0)):].strip()
-            status_match = re.search(status_keywords, match_type_status.group(0))
-            status_val = status_match.group(0).strip() if status_match else ""
-        else:
-            match_type_status = re.search(r'^(.*?)(\d{2}\.\d{2}\.\d{4},\s\d{2}:\d{2})', remaining_text)
-            if match_type_status:
-                type_val = match_type_status.group(1).strip()
-                remaining_text = remaining_text[len(match_type_status.group(1)):].strip()
-
-        # Дата і час виконання
         date_time_exec_val = ""
-        date_time_exec_match = re.search(r'(\d{2}\.\d{2}\.\d{4},\s\d{2}:\d{2})', remaining_text)
-        if date_time_exec_match:
-            date_time_exec_val = date_time_exec_match.group(1)
-            remaining_text = remaining_text[date_time_exec_match.end():].strip()
-
-        # Простій
+        time_diff_val = ""
         downtime_val = ""
-        downtime_match = re.search(r'(?:-[\d\s\w]+хв)?\s*?([\d\s\w]+хв)', remaining_text)
-        if downtime_match:
-            downtime_val = downtime_match.group(1).strip()
-            remaining_text = remaining_text[downtime_match.end():].strip()
-        else:
-            downtime_match = re.search(r'(-[\d\s\w]+хв)-', remaining_text)
-            if downtime_match:
-                downtime_val = downtime_match.group(1).strip()
-                remaining_text = remaining_text[downtime_match.end():].strip()
-        
-        # Решта інформації
         description_val = ""
         report_val = ""
         цех_val = ""
@@ -111,44 +57,60 @@ def parse_pasted_data(text_data):
         author_val = ""
         service_val = ""
         executor_val = ""
-        
-        middle_part_match = re.search(r'(.*?)(Цех|Кулінарний цех)', remaining_text, re.IGNORECASE)
-        if middle_part_match:
-            middle_part = middle_part_match.group(1)
-            
-            report_keywords = "Ревізія|Заміна|Налаштування|Усунено|Перевірка|Відновлення|Перезавантажили|Видалення|Змащення|Пошук|Перероблено|Поміч|Допомога"
-            report_match = re.search(report_keywords, middle_part)
-            if report_match:
-                description_val = middle_part[:report_match.start()].strip()
-                report_val = middle_part[report_match.start():].strip()
-            else:
-                description_val = middle_part.strip()
-                report_val = ""
 
-            цех_match = re.search(r'(Цех [^\s]+|Кулінарний цех)', remaining_text)
-            цех_val = цех_match.group(0).strip() if цех_match else ""
-            
-            department_match = re.search(r'(Дільниця [^\s]+(?: [^\s]+)*)', remaining_text)
-            department_val = department_match.group(0).strip() if department_match else ""
-            
-            line_match = re.search(r'(Лінія [^\s]+(?: [^\s]+)*)', remaining_text)
-            line_val = line_match.group(0).strip() if line_match else ""
+        # Вид заявки та Статус
+        match_type_status = re.search(r'^(.*?)(?:-Відмінено|-Відхилено|Виконано|Чекає підтвердження|В роботі)', remaining_text)
+        if match_type_status:
+            type_val = match_type_status.group(1).strip()
+            if type_val.startswith("Простій РЦ"): type_val = "Простій РЦ"
+            elif type_val.startswith("Простій"): type_val = "Простій"
+            remaining_text = remaining_text[len(match_type_status.group(0)):].strip()
+            status_match = re.search(r'(-Відмінено|-Відхилено|Виконано|Чекає підтвердження|В роботі)', match_type_status.group(0))
+            status_val = status_match.group(1).strip() if status_match else ""
 
-            equipment_match = re.search(r'(Машина|Металодетектор|Транспортер|Пакувальна машина|Кліпсатор|Конвеєр|Ваги)[^,]+', remaining_text)
+        # Дата і час виконання
+        date_time_exec_match = re.search(r'(\d{2}\.\d{2}\.\d{4},\s\d{2}:\d{2})', remaining_text)
+        date_time_exec_val = date_time_exec_match.group(1) if date_time_exec_match else ""
+
+        # Час заявки та Простій
+        time_diff_match = re.search(r'-([\d\s\w]+)', remaining_text)
+        time_diff_val = time_diff_match.group(1).strip() if time_diff_match else ""
+        downtime_match = re.search(r'(\d+\sхв|\d+\sгод\s\d+\sхв)', remaining_text)
+        downtime_val = downtime_match.group(1) if downtime_match else ""
+
+        # Решта інформації
+        full_info_match = re.search(r'(?:Виконано|Відмінено|Відхилено|Чекає підтвердження|В роботі)(.*?)(\d{2}\.\d{2}\.\d{4},\s\d{2}:\d{2})', record)
+        if full_info_match:
+            middle_part = full_info_match.group(1).strip()
+            цех_match = re.search(r'(Цех [^\s]+)', middle_part)
+            цех_val = цех_match.group(1) if цех_match else ""
+            
+            description_and_report_match = re.search(r'(?:хв|\w{2,})(.*?)(Цех [^\s]+)', middle_part)
+            if description_and_report_match:
+                description_and_report_text = description_and_report_match.group(1).strip()
+                report_match = re.search(r'Ревізія|Заміна|Налаштування|Усунено|Перевірка|Відновлення|Перезавантажили|Видалення|Змащення|Пошук|Перероблено|Поміч|Допомога', description_and_report_text)
+                if report_match:
+                    description_val = description_and_report_text[:report_match.start()].strip()
+                    report_val = description_and_report_text[report_match.start():].strip()
+                else:
+                    description_val = description_and_report_text
+                    report_val = ""
+            
+            department_match = re.search(r'(Дільниця [^\s]+)', middle_part)
+            department_val = department_match.group(1) if department_match else ""
+            line_match = re.search(r'(Лінія [^\s]+)', middle_part)
+            line_val = line_match.group(1) if line_match else ""
+            equipment_match = re.search(r'(Машина|Металодетектор|Транспортер|Пакувальна машина|Кліпсатор|Конвеєр|Ваги)[^,]+', middle_part)
             equipment_val = equipment_match.group(0).strip() if equipment_match else ""
-            
             date_time_create_match = re.search(r'(\d{2}\.\d{2}\.\d{4},\s\d{2}:\d{2})', record)
             date_time_create_val = date_time_create_match.group(1) if date_time_create_match else ""
-            
-            author_match = re.search(r'(\d{2}:\d{2})([\sА-ЯІЄЇҐ][а-яіїєґ]+(?:\s[А-ЯІЄЇҐ][а-яіїєґ]+)?)', record)
+            author_match = re.search(r'(\d{2}:\d{2})(\s*[А-ЯЇЄІҐ][а-яїєіґ]+(?:\s+[А-ЯЇЄІҐ][а-яїєіґ]+)?)', remaining_text)
             author_val = author_match.group(2).strip() if author_match else ""
-            
-            service_match = re.search(r'(Служба з автоматизованих систем керування виробництвом|Служба ремонту основного обладнання)', record)
-            service_val = service_match.group(0).strip() if service_match else ""
-
-            executor_match = re.search(r'(?:Служби?.*?)(\s*[А-ЯІЄЇҐ][а-яіїєґ]+(?:\s+[А-ЯІЄЇҐ][а-яіїєґ]+)*)', remaining_text)
+            service_match = re.search(r'(Служба [^\s]+(?: [^\s]+)*)', remaining_text)
+            service_val = service_match.group(1).strip() if service_match else ""
+            executor_match = re.search(r'(?:Служби?.*?)(\s*[А-ЯЇЄІҐ][а-яїєіґ]+(?:\s+[А-ЯЇЄІҐ][а-яїєіґ]+)?)', remaining_text)
             executor_val = executor_match.group(1).strip() if executor_match else ""
-        
+            
         parsed_data.append({
             "Ідентифікатор": id_val,
             "Вид заявки": type_val,
@@ -182,39 +144,37 @@ if pasted_data:
         else:
             st.success(f"✅ Успішно розпізнано {len(df)} заявок.")
 
-            # --- Виведення таблиці (всіх заявок) ---
+            # Обробка даних для аналізу
+            df['Дата і час створення'] = pd.to_datetime(df['Дата і час створення'], format='%d.%m.%Y, %H:%M', errors='coerce')
+            df['Дата і час виконання'] = pd.to_datetime(df['Дата і час виконання'], format='%d.%m.%Y, %H:%M', errors='coerce')
+            df['Час до виконання (хв)'] = (df['Дата і час виконання'] - df['Дата і час створення']).dt.total_seconds() / 60
+
+            # Видалення порожніх стовпців для чистоти
+            df.dropna(axis=1, how='all', inplace=True)
+            
+            # --- Виведення таблиці ---
             st.subheader("📋 Розпізнана таблиця")
             st.dataframe(df, use_container_width=True)
 
-            # --- Аналітика тільки для заявок зі статусом "Виконано" ---
-            st.subheader("📊 Аналітика даних (тільки виконані заявки)")
+            # --- Виведення аналітики ---
+            st.subheader("📊 Аналітика даних")
             
-            df_executed = df[df['Статус'] == 'Виконано'].copy()
-            
-            if not df_executed.empty:
-                # Створення нового числового стовпця з простоєм в хвилинах
-                df_executed['Простій (хв)'] = df_executed['Простій (текст)'].apply(convert_downtime_to_minutes)
-                
-                avg_downtime = df_executed['Простій (хв)'].mean()
-                if pd.notna(avg_downtime):
-                    st.metric("Середній час простою", f"{avg_downtime:.1f} хв")
-                else:
-                    st.info("Недостатньо даних для розрахунку середнього часу простою.")
-            else:
-                st.info("Недостатньо даних для розрахунку аналітики (немає виконаних заявок).")
+            # Середній час до виконання
+            avg_execution_time = df['Час до виконання (хв)'].mean()
+            if pd.notna(avg_execution_time):
+                st.metric("Середній час до виконання", f"{avg_execution_time:.1f} хв")
             
             # Графік заявок по цехах
-            if 'Цех' in df_executed.columns:
-                department_counts = df_executed['Цех'].value_counts().reset_index()
-                if not department_counts.empty:
-                    fig_departments = px.bar(
-                        department_counts, 
-                        x='Цех', 
-                        y='count',
-                        title='Кількість заявок по цехах (тільки виконані)',
-                        labels={'count': 'Кількість заявок'}
-                    )
-                    st.plotly_chart(fig_departments, use_container_width=True)
+            if 'Цех' in df.columns:
+                department_counts = df['Цех'].value_counts().reset_index()
+                fig_departments = px.bar(
+                    department_counts, 
+                    x='Цех', 
+                    y='count',
+                    title='Кількість заявок по цехах',
+                    labels={'count': 'Кількість заявок'}
+                )
+                st.plotly_chart(fig_departments, use_container_width=True)
             
             # --- Кнопка для завантаження ---
             @st.cache_data
