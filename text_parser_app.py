@@ -30,7 +30,6 @@ def convert_downtime_to_minutes(downtime_text):
     total_minutes = 0
     downtime_text = downtime_text.strip()
     
-    # Виділяємо дні, години та хвилини
     days_match = re.search(r'(\d+)\s*день', downtime_text)
     hours_match = re.search(r'(\d+)\s*год', downtime_text)
     minutes_match = re.search(r'(\d+)\s*хв', downtime_text)
@@ -53,35 +52,60 @@ def parse_pasted_data(text_data):
     for record in records:
         record = record.replace('\n', ' ')
 
-        # Витягуємо ID та решту тексту
+        # ID
         id_match = re.search(r'^(A-\d{6,})', record)
         if not id_match:
             continue
         id_val = id_match.group(1)
         remaining_text = record[len(id_val):].strip()
 
-        # Вид заявки та Статус
-        type_val = ""
+        # Статус
         status_val = ""
-        type_status_match = re.search(r'^(.*?)(?:-Відмінено|-Відхилено|Виконано|Чекає підтвердження|В роботі)', remaining_text)
-        if type_status_match:
-            type_val = type_status_match.group(1).strip()
-            status_val = type_status_match.group(2).strip()
-            remaining_text = remaining_text[type_status_match.end():].strip()
-        else:
-            type_val = remaining_text.split()[0].strip()
-            remaining_text = remaining_text[len(type_val):].strip()
+        status_match = re.search(r'(-Відмінено|-Відхилено|Виконано|Чекає підтвердження|В роботі)', remaining_text)
+        if status_match:
+            status_val = status_match.group(1).strip()
+            
+        # Вид заявки
+        type_val = ""
+        type_match = re.search(r'^(.*?)(?:-Відмінено|-Відхилено|Виконано|Чекає підтвердження|В роботі)', remaining_text)
+        if type_match:
+            type_val = type_match.group(1).strip()
+            if type_val.startswith("Простій РЦ"): type_val = "Простій РЦ"
+            elif type_val.startswith("Простій"): type_val = "Простій"
         
         # Дати
         dates_match = re.findall(r'(\d{2}\.\d{2}\.\d{4},\s\d{2}:\d{2})', record)
         date_time_exec_val = dates_match[0] if len(dates_match) > 0 else ""
         date_time_create_val = dates_match[-1] if len(dates_match) > 1 else ""
 
-        # Простій
+        # Простій (текст)
         downtime_val = ""
-        downtime_match = re.search(r'(?:Обсяг робіт|Простій)\s*?(?:-[\d\s\w]+хв)?\s*?([\d\s\w]+хв)', remaining_text)
+        # Шукаємо час простою, який йде після іншого часу
+        downtime_match = re.search(r'(?:-[\d\s\w]+хв)?\s*?([\d\s\w]+хв)', remaining_text)
         if downtime_match:
             downtime_val = downtime_match.group(1).strip()
+        else:
+            # Якщо простій один, то витягуємо його
+            downtime_match = re.search(r'([\d\s\w]+хв)', remaining_text)
+            if downtime_match:
+                downtime_val = downtime_match.group(1).strip()
+        
+        # Опис та Звіт виконання (витягуємо блок між часом і цехом)
+        description_and_report = ""
+        start_index = record.find(downtime_val) + len(downtime_val) if downtime_val else 0
+        end_index = record.find('Цех')
+        if start_index < end_index:
+            description_and_report = record[start_index:end_index].strip()
+        
+        description_val = ""
+        report_val = ""
+        report_keywords = "Ревізія|Заміна|Налаштування|Усунено|Перевірка|Відновлення|Перезавантажили|Видалення|Змащення|Пошук|Перероблено|Поміч|Допомога"
+        report_match = re.search(report_keywords, description_and_report)
+        if report_match:
+            description_val = description_and_report[:report_match.start()].strip()
+            report_val = description_and_report[report_match.start():].strip()
+        else:
+            description_val = description_and_report
 
         # Пошук ключових слів
         цех_val = ""
@@ -105,9 +129,9 @@ def parse_pasted_data(text_data):
             equipment_val = equipment_match.group(0).strip()
         
         author_val = ""
-        author_match = re.search(r'Автор\s*?([\sА-ЯІЄЇҐ][а-яіїєґ]+(?:\s[А-ЯІЄЇҐ][а-яіїєґ]+)?)', record)
+        author_match = re.search(r'(\d{2}:\d{2})([\sА-ЯІЄЇҐ][а-яіїєґ]+(?:\s[А-ЯІЄЇҐ][а-яіїєґ]+)?)', record)
         if author_match:
-            author_val = author_match.group(1).strip()
+            author_val = author_match.group(2).strip()
 
         service_val = ""
         service_match = re.search(r'Служба\s*?(Служба [^\s]+(?: [^\s]+)*)', record)
@@ -124,6 +148,8 @@ def parse_pasted_data(text_data):
             "Вид заявки": type_val,
             "Дата і час виконання": date_time_exec_val,
             "Статус": status_val,
+            "Опис": description_val,
+            "Звіт виконання": report_val,
             "Простій (текст)": downtime_val,
             "Цех": цех_val,
             "Дільниця": department_val,
