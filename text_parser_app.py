@@ -50,28 +50,33 @@ def parse_pasted_data(text_data):
     parsed_data = []
 
     for record in records:
-        record = record.replace('\n', ' ')
-
+        record = record.replace('\n', ' ').strip()
+        remaining_text = record
+        
         # ID
-        id_match = re.search(r'^(A-\d{6,})', record)
+        id_match = re.search(r'^(A-\d{6,})', remaining_text)
         if not id_match:
             continue
         id_val = id_match.group(1)
-        remaining_text = record[len(id_val):].strip()
+        remaining_text = remaining_text[len(id_val):].strip()
 
         # Статус
         status_val = ""
-        status_match = re.search(r'(-Відмінено|-Відхилено|Виконано|Чекає підтвердження|В роботі)', remaining_text)
+        status_keywords = r'(-Відмінено|-Відхилено|Виконано|Чекає підтвердження|В роботі)'
+        status_match = re.search(status_keywords, remaining_text)
         if status_match:
             status_val = status_match.group(1).strip()
             
         # Вид заявки
         type_val = ""
-        type_match = re.search(r'^(.*?)(?:-Відмінено|-Відхилено|Виконано|Чекає підтвердження|В роботі)', remaining_text)
-        if type_match:
-            type_val = type_match.group(1).strip()
+        if status_match:
+            type_val = remaining_text[:status_match.start()].strip()
             if type_val.startswith("Простій РЦ"): type_val = "Простій РЦ"
             elif type_val.startswith("Простій"): type_val = "Простій"
+            remaining_text = remaining_text[status_match.end():].strip()
+        else:
+            type_val = remaining_text.split()[0].strip()
+            remaining_text = remaining_text[len(type_val):].strip()
         
         # Дати
         dates_match = re.findall(r'(\d{2}\.\d{2}\.\d{4},\s\d{2}:\d{2})', record)
@@ -80,23 +85,25 @@ def parse_pasted_data(text_data):
 
         # Простій (текст)
         downtime_val = ""
-        # Шукаємо час простою, який йде після іншого часу
-        downtime_match = re.search(r'(?:-[\d\s\w]+хв)?\s*?([\d\s\w]+хв)', remaining_text)
-        if downtime_match:
-            downtime_val = downtime_match.group(1).strip()
-        else:
-            # Якщо простій один, то витягуємо його
-            downtime_match = re.search(r'([\d\s\w]+хв)', remaining_text)
+        # Знаходимо простій тільки для виконаних заявок, де він є другим часом
+        if status_val == 'Виконано':
+            downtime_match = re.search(r'(?:-[\d\s\w]+хв)\s*?([\d\s\w]+хв)', record)
             if downtime_match:
                 downtime_val = downtime_match.group(1).strip()
-        
-        # Опис та Звіт виконання (витягуємо блок між часом і цехом)
+            
+        # Опис та Звіт виконання (витягуємо блок між датами/простоєм і цехом)
         description_and_report = ""
-        start_index = record.find(downtime_val) + len(downtime_val) if downtime_val else 0
-        end_index = record.find('Цех')
-        if start_index < end_index:
-            description_and_report = record[start_index:end_index].strip()
-        
+        end_desc_index = record.find('Цех')
+        if end_desc_index != -1:
+            description_and_report_raw = record[:end_desc_index]
+            
+            # Вирізаємо все, що до часу простою
+            start_desc_index = description_and_report_raw.rfind(downtime_val) if downtime_val else -1
+            if start_desc_index != -1:
+                description_and_report = description_and_report_raw[start_desc_index + len(downtime_val):].strip()
+            else:
+                description_and_report = description_and_report_raw.strip()
+
         description_val = ""
         report_val = ""
         report_keywords = "Ревізія|Заміна|Налаштування|Усунено|Перевірка|Відновлення|Перезавантажили|Видалення|Змащення|Пошук|Перероблено|Поміч|Допомога"
