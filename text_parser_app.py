@@ -4,6 +4,7 @@ import re
 from io import StringIO, BytesIO
 import plotly.express as px
 import openpyxl
+import numpy as np
 
 st.set_page_config(layout="wide", page_title="Аналізатор даних з тексту", page_icon="📝")
 
@@ -23,7 +24,26 @@ st.markdown("""
 """)
 
 
-# --- Оновлена функція-парсер для вставлених даних (без "Час заявки") ---
+# --- Допоміжна функція для конвертації тексту часу в хвилини ---
+def convert_downtime_to_minutes(downtime_text):
+    if not isinstance(downtime_text, str) or downtime_text.strip() == "":
+        return np.nan
+    
+    total_minutes = 0
+    days = re.search(r'(\d+)\s*день', downtime_text)
+    hours = re.search(r'(\d+)\s*год', downtime_text)
+    minutes = re.search(r'(\d+)\s*хв', downtime_text)
+    
+    if days:
+        total_minutes += int(days.group(1)) * 24 * 60
+    if hours:
+        total_minutes += int(hours.group(1)) * 60
+    if minutes:
+        total_minutes += int(minutes.group(1))
+        
+    return total_minutes
+
+# --- Оновлена функція-парсер для вставлених даних ---
 def parse_pasted_data(text_data):
     """
     Розбирає вставлений текст, витягаючи дані з кожної заявки.
@@ -55,6 +75,11 @@ def parse_pasted_data(text_data):
             remaining_text = remaining_text[len(match_type_status.group(0)):].strip()
             status_match = re.search(status_keywords, match_type_status.group(0))
             status_val = status_match.group(0).strip() if status_match else ""
+        else:
+            match_type_status = re.search(r'^(.*?)(\d{2}\.\d{2}\.\d{4},\s\d{2}:\d{2})', remaining_text)
+            if match_type_status:
+                type_val = match_type_status.group(1).strip()
+                remaining_text = remaining_text[len(match_type_status.group(1)):].strip()
 
         # Дата і час виконання
         date_time_exec_val = ""
@@ -65,12 +90,15 @@ def parse_pasted_data(text_data):
 
         # Простій
         downtime_val = ""
-        # Регулярний вираз для пошуку часу простою
-        # Шукає значення, що складається з годин і/або хвилин після можливого іншого часового значення (яке ми ігноруємо)
-        downtime_match = re.search(r'(?:-[\d\s\w]+хв)?([\d\s\w]+хв)', remaining_text)
+        downtime_match = re.search(r'(?:-[\d\s\w]+хв)?\s*?([\d\s\w]+хв)', remaining_text)
         if downtime_match:
             downtime_val = downtime_match.group(1).strip()
             remaining_text = remaining_text[downtime_match.end():].strip()
+        else:
+            downtime_match = re.search(r'(-[\d\s\w]+хв)-', remaining_text)
+            if downtime_match:
+                downtime_val = downtime_match.group(1).strip()
+                remaining_text = remaining_text[downtime_match.end():].strip()
         
         # Решта інформації
         description_val = ""
@@ -84,7 +112,6 @@ def parse_pasted_data(text_data):
         service_val = ""
         executor_val = ""
         
-        # Витягнення Опису, Звіту, Цеху, Дільниці, тощо
         middle_part_match = re.search(r'(.*?)(Цех|Кулінарний цех)', remaining_text, re.IGNORECASE)
         if middle_part_match:
             middle_part = middle_part_match.group(1)
@@ -155,37 +182,39 @@ if pasted_data:
         else:
             st.success(f"✅ Успішно розпізнано {len(df)} заявок.")
 
-            # Обробка даних для аналізу
-            df['Дата і час створення'] = pd.to_datetime(df['Дата і час створення'], format='%d.%m.%Y, %H:%M', errors='coerce')
-            df['Дата і час виконання'] = pd.to_datetime(df['Дата і час виконання'], format='%d.%m.%Y, %H:%M', errors='coerce')
-            df['Час до виконання (хв)'] = (df['Дата і час виконання'] - df['Дата і час створення']).dt.total_seconds() / 60
-
-            # Видалення порожніх стовпців для чистоти
-            df.dropna(axis=1, how='all', inplace=True)
-            
-            # --- Виведення таблиці ---
+            # --- Виведення таблиці (всіх заявок) ---
             st.subheader("📋 Розпізнана таблиця")
             st.dataframe(df, use_container_width=True)
 
-            # --- Виведення аналітики ---
-            st.subheader("📊 Аналітика даних")
+            # --- Аналітика тільки для заявок зі статусом "Виконано" ---
+            st.subheader("📊 Аналітика даних (тільки виконані заявки)")
             
-            # Середній час до виконання
-            avg_execution_time = df['Час до виконання (хв)'].mean()
-            if pd.notna(avg_execution_time):
-                st.metric("Середній час до виконання", f"{avg_execution_time:.1f} хв")
+            df_executed = df[df['Статус'] == 'Виконано'].copy()
+            
+            if not df_executed.empty:
+                # Створення нового числового стовпця з простоєм в хвилинах
+                df_executed['Простій (хв)'] = df_executed['Простій (текст)'].apply(convert_downtime_to_minutes)
+                
+                avg_downtime = df_executed['Простій (хв)'].mean()
+                if pd.notna(avg_downtime):
+                    st.metric("Середній час простою", f"{avg_downtime:.1f} хв")
+                else:
+                    st.info("Недостатньо даних для розрахунку середнього часу простою.")
+            else:
+                st.info("Недостатньо даних для розрахунку аналітики (немає виконаних заявок).")
             
             # Графік заявок по цехах
-            if 'Цех' in df.columns:
-                department_counts = df['Цех'].value_counts().reset_index()
-                fig_departments = px.bar(
-                    department_counts, 
-                    x='Цех', 
-                    y='count',
-                    title='Кількість заявок по цехах',
-                    labels={'count': 'Кількість заявок'}
-                )
-                st.plotly_chart(fig_departments, use_container_width=True)
+            if 'Цех' in df_executed.columns:
+                department_counts = df_executed['Цех'].value_counts().reset_index()
+                if not department_counts.empty:
+                    fig_departments = px.bar(
+                        department_counts, 
+                        x='Цех', 
+                        y='count',
+                        title='Кількість заявок по цехах (тільки виконані)',
+                        labels={'count': 'Кількість заявок'}
+                    )
+                    st.plotly_chart(fig_departments, use_container_width=True)
             
             # --- Кнопка для завантаження ---
             @st.cache_data
