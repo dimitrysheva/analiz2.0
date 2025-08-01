@@ -1,232 +1,82 @@
 import streamlit as st
 import pandas as pd
 import re
-from io import StringIO, BytesIO
-import plotly.express as px
-import openpyxl
-import numpy as np
+from collections import Counter
+from io import StringIO
 
-st.set_page_config(layout="wide", page_title="Аналізатор даних з тексту", page_icon="📝")
-
-st.title("📝 Аналізатор даних з тексту")
+st.set_page_config(page_title="Аналізатор заявок", layout="wide")
+st.title("📋 Аналіз аварійних заявок")
 
 st.markdown("""
-    Ця програма призначена для швидкого аналізу даних з заявок, скопійованих
-    прямо зі сторінки.
-
-    **Інструкція:**
-    1. Перейдіть на сторінку з даними заявок.
-    2. Виділіть весь вміст сторінки (наприклад, натиснувши **`Ctrl+A`**).
-    3. Скопіюйте виділений вміст у буфер обміну (**`Ctrl+C`**).
-    4. Вставте текст у поле нижче (**`Ctrl+V`**).
-
-    Програма автоматично розпізнає та структурує дані у таблицю для аналізу.
+### 🔽 Встав текст таблиці (Ctrl+V з екрану)
+*Скопіюй всю таблицю заявок з браузера (Ctrl+C) та встав сюди:* 
 """)
 
-def convert_downtime_to_minutes(downtime_text):
-    if not isinstance(downtime_text, str) or downtime_text.strip() == "":
-        return np.nan
+raw_text = st.text_area("Встав сюди текст", height=400)
+
+if st.button("🔍 Проаналізувати") and raw_text:
     
-    total_minutes = 0
-    downtime_text = downtime_text.strip()
-    
-    days_match = re.search(r'(\d+)\s*день', downtime_text)
-    hours_match = re.search(r'(\d+)\s*год', downtime_text)
-    minutes_match = re.search(r'(\d+)\s*хв', downtime_text)
-    
-    if days_match:
-        total_minutes += int(days_match.group(1)) * 24 * 60
-    if hours_match:
-        total_minutes += int(hours_match.group(1)) * 60
-    if minutes_match:
-        total_minutes += int(minutes_match.group(1))
-        
-    return total_minutes
+    # Розбиття на рядки та простий парсинг
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip() and 'A-' in line]
+    records = []
 
-def parse_pasted_data(text_data):
-    records = re.split(r'(A-\d{6,})', text_data)
-    records = [records[i] + records[i+1] for i in range(1, len(records), 2)]
-    
-    parsed_data = []
-
-    for record in records:
-        record = record.replace('\n', ' ').strip()
-        remaining_text = record
-        
-        # ID
-        id_match = re.search(r'^(A-\d{6,})', remaining_text)
-        if not id_match:
-            continue
-        id_val = id_match.group(1)
-        remaining_text = remaining_text[len(id_val):].strip()
-
-        # Статус
-        status_val = ""
-        status_keywords = r'(-Відмінено|-Відхилено|Виконано|Чекає підтвердження|В роботі)'
-        status_match = re.search(status_keywords, remaining_text)
-        if status_match:
-            status_val = status_match.group(1).strip()
+    for line in lines:
+        try:
+            id_match = re.search(r'(A-\d{7})', line)
+            id_ = id_match.group(1) if id_match else ""
+            status = "Виконано" if "Виконано" in line else ("Відхилено" if "Відхилено" in line else ("Відмінено" if "Відмінено" in line else "Інше"))
+            description = re.findall(r'\t([^\t]+)\t', line)
             
-        # Вид заявки
-        type_val = ""
-        if status_match:
-            type_val = remaining_text[:status_match.start()].strip()
-            if type_val.startswith("Простій РЦ"): type_val = "Простій РЦ"
-            elif type_val.startswith("Простій"): type_val = "Простій"
-            remaining_text = remaining_text[status_match.end():].strip()
-        else:
-            type_val = remaining_text.split()[0].strip()
-            remaining_text = remaining_text[len(type_val):].strip()
-        
-        # Дати
-        dates_match = re.findall(r'(\d{2}\.\d{2}\.\d{4},\s\d{2}:\d{2})', record)
-        date_time_exec_val = dates_match[0] if len(dates_match) > 0 else ""
-        date_time_create_val = dates_match[-1] if len(dates_match) > 1 else ""
+            records.append({
+                "ID": id_,
+                "Статус": status,
+                "Опис": description[-5] if len(description) >= 5 else "",
+                "Обладнання": description[-2] if len(description) >= 2 else "",
+                "Виконавець": description[-1] if len(description) >= 1 else "",
+            })
+        except Exception as e:
+            st.warning(f"Помилка парсингу рядка: {line}")
 
-        # Простій (текст)
-        downtime_val = ""
-        # Знаходимо простій тільки для виконаних заявок, де він є другим часом
-        if status_val == 'Виконано':
-            downtime_match = re.search(r'(?:-[\d\s\w]+хв)\s*?([\d\s\w]+хв)', record)
-            if downtime_match:
-                downtime_val = downtime_match.group(1).strip()
-            
-        # Опис та Звіт виконання (витягуємо блок між датами/простоєм і цехом)
-        description_and_report = ""
-        end_desc_index = record.find('Цех')
-        if end_desc_index != -1:
-            description_and_report_raw = record[:end_desc_index]
-            
-            # Вирізаємо все, що до часу простою
-            start_desc_index = description_and_report_raw.rfind(downtime_val) if downtime_val else -1
-            if start_desc_index != -1:
-                description_and_report = description_and_report_raw[start_desc_index + len(downtime_val):].strip()
-            else:
-                description_and_report = description_and_report_raw.strip()
+    df = pd.DataFrame(records)
 
-        description_val = ""
-        report_val = ""
-        report_keywords = "Ревізія|Заміна|Налаштування|Усунено|Перевірка|Відновлення|Перезавантажили|Видалення|Змащення|Пошук|Перероблено|Поміч|Допомога"
-        report_match = re.search(report_keywords, description_and_report)
-        if report_match:
-            description_val = description_and_report[:report_match.start()].strip()
-            report_val = description_and_report[report_match.start():].strip()
-        else:
-            description_val = description_and_report
+    st.success(f"Знайдено {len(df)} заявок")
 
-        # Пошук ключових слів
-        цех_val = ""
-        цех_match = re.search(r'(Цех [^\s]+|Кулінарний цех)', record)
-        if цех_match:
-            цех_val = цех_match.group(0).strip()
-        
-        department_val = ""
-        department_match = re.search(r'(Дільниця [^\s]+(?: [^\s]+)*)', record)
-        if department_match:
-            department_val = department_match.group(0).strip()
+    col1, col2, col3 = st.columns(3)
 
-        line_val = ""
-        line_match = re.search(r'(Лінія [^\s]+(?: [^\s]+)*)', record)
-        if line_match:
-            line_val = line_match.group(0).strip()
+    with col1:
+        st.metric("Виконано", (df['Статус'] == "Виконано").sum())
+    with col2:
+        st.metric("Відхилено", (df['Статус'] == "Відхилено").sum())
+    with col3:
+        st.metric("Відмінено", (df['Статус'] == "Відмінено").sum())
 
-        equipment_val = ""
-        equipment_match = re.search(r'(Машина|Металодетектор|Транспортер|Пакувальна машина|Кліпсатор|Конвеєр|Ваги)[^,]+', record)
-        if equipment_match:
-            equipment_val = equipment_match.group(0).strip()
-        
-        author_val = ""
-        author_match = re.search(r'(\d{2}:\d{2})([\sА-ЯІЄЇҐ][а-яіїєґ]+(?:\s[А-ЯІЄЇҐ][а-яіїєґ]+)?)', record)
-        if author_match:
-            author_val = author_match.group(2).strip()
+    # ТОП-5
+    def top_counts(series):
+        return pd.DataFrame(Counter(series).most_common(5), columns=['Значення', 'Кількість'])
 
-        service_val = ""
-        service_match = re.search(r'Служба\s*?(Служба [^\s]+(?: [^\s]+)*)', record)
-        if service_match:
-            service_val = service_match.group(1).strip()
-        
-        executor_val = ""
-        executor_match = re.search(r'Виконавець\s*?([\sА-ЯІЄЇҐ][а-яіїєґ]+(?:\s+[А-ЯІЄЇҐ][а-яіїєґ]+)*)', record)
-        if executor_match:
-            executor_val = executor_match.group(1).strip()
-        
-        parsed_data.append({
-            "Ідентифікатор": id_val,
-            "Вид заявки": type_val,
-            "Дата і час виконання": date_time_exec_val,
-            "Статус": status_val,
-            "Опис": description_val,
-            "Звіт виконання": report_val,
-            "Простій (текст)": downtime_val,
-            "Цех": цех_val,
-            "Дільниця": department_val,
-            "Лінія": line_val,
-            "Обладнання": equipment_val,
-            "Дата і час створення": date_time_create_val,
-            "Автор": author_val,
-            "Служба": service_val,
-            "Виконавець": executor_val,
-        })
-    return pd.DataFrame(parsed_data)
+    st.markdown("### 📌 ТОП проблем / обладнання / виконавців")
+    col1, col2, col3 = st.columns(3)
 
-pasted_data = st.text_area("📋 Вставте дані сюди", height=300, help="Виділіть і скопіюйте дані зі сторінки, а потім вставте сюди.")
+    with col1:
+        st.write("**ТОП проблем**")
+        st.dataframe(top_counts(df['Опис']))
 
-if pasted_data:
-    try:
-        df = parse_pasted_data(pasted_data)
-        
-        if df.empty:
-            st.warning("⚠️ Не вдалося розпізнати жодної заявки. Перевірте, чи дані скопійовані правильно.")
-        else:
-            st.success(f"✅ Успішно розпізнано {len(df)} заявок.")
+    with col2:
+        st.write("**ТОП обладнання**")
+        st.dataframe(top_counts(df['Обладнання']))
 
-            st.subheader("📋 Розпізнана таблиця")
-            st.dataframe(df, use_container_width=True)
+    with col3:
+        st.write("**ТОП виконавців**")
+        st.dataframe(top_counts(df['Виконавець']))
 
-            st.subheader("📊 Аналітика даних (тільки виконані заявки)")
-            
-            df_executed = df[df['Статус'] == 'Виконано'].copy()
-            
-            if not df_executed.empty and 'Простій (текст)' in df_executed.columns:
-                df_executed['Простій (хв)'] = df_executed['Простій (текст)'].apply(convert_downtime_to_minutes)
-                
-                avg_downtime = df_executed['Простій (хв)'].mean()
-                if pd.notna(avg_downtime):
-                    st.metric("Середній час простою", f"{avg_downtime:.1f} хв")
-                else:
-                    st.info("Недостатньо даних для розрахунку середнього часу простою.")
-            else:
-                st.info("Немає виконаних заявок для аналітики.")
-            
-            if 'Цех' in df_executed.columns:
-                department_counts = df_executed['Цех'].value_counts().reset_index()
-                if not department_counts.empty:
-                    fig_departments = px.bar(
-                        department_counts, 
-                        x='Цех', 
-                        y='count',
-                        title='Кількість заявок по цехах (тільки виконані)',
-                        labels={'count': 'Кількість заявок'}
-                    )
-                    st.plotly_chart(fig_departments, use_container_width=True)
-            
-            @st.cache_data
-            def convert_df_to_excel(df_to_convert):
-                output = BytesIO()
-                df_to_convert.to_excel(output, index=False, engine='openpyxl')
-                processed_data = output.getvalue()
-                return processed_data
+    st.markdown("### 📄 Повна таблиця")
+    st.dataframe(df, use_container_width=True)
 
-            st.download_button(
-                label="⬇️ Завантажити дані як Excel",
-                data=convert_df_to_excel(df),
-                file_name=f'аналіз_заявок_з_тексту_{pd.Timestamp.now().strftime("%Y-%m-%d")}.xlsx',
-                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                help='Завантажити оброблену таблицю у форматі Excel'
-            )
-
-    except Exception as e:
-        st.error(f"❌ Виникла помилка під час обробки даних: {e}")
-        st.info("Будь ласка, перевірте, чи формат вставлених даних відповідає прикладу.")
-else:
-    st.info("⬆️ Будь ласка, вставте дані, щоб розпочати аналіз.")
+    # Експорт
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Завантажити CSV",
+        data=csv,
+        file_name='analyzed_zayavky.csv',
+        mime='text/csv'
+    )
